@@ -4,7 +4,7 @@ import os
 from io import BytesIO
 from dotenv import load_dotenv
 from telethon import TelegramClient, events
-from telethon.tl.types import MessageMediaPhoto, MessageMediaDocument, Message
+from telethon.tl.types import MessageMediaPhoto, MessageMediaDocument
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update, InputMediaPhoto, InputMediaVideo
 from telegram.ext import Application, CallbackQueryHandler, ContextTypes
 import logging
@@ -40,8 +40,9 @@ DRAFT_CHANNEL_ID = parse_channel(DRAFT_CHANNEL)
 PUBLIC_CHANNEL_ID = parse_channel(PUBLIC_CHANNEL)
 SOURCE_CHANNELS = [parse_channel(ch) for ch in SOURCE_CHANNELS if ch.strip()]
 
-# Хранилище для данных медиа
-draft_posts = {}  # {message_id: {'media': [...], 'text': '...', 'source': '...'}}
+# Хранилище
+draft_posts = {}
+last_message_ids = {}  # {channel_id: last_message_id}
 
 # ==================== ОЧИСТКА ТЕКСТА ====================
 def clean_text(text: str) -> str:
@@ -75,12 +76,9 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await query.answer("Пост не найден!")
                 return
             
-            # Берем сохраненный текст (уже обновленный через обработчик редактирования)
             current_text = post_data.get("text", "")
-            
             print(f"📝 Публикуем текст: {current_text[:100]}...")
             
-            # Если есть медиа, публикуем
             if post_data["media"]:
                 media_group = []
                 
@@ -125,7 +123,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     return
             
             else:
-                # Только текст
                 try:
                     await context.bot.send_message(
                         chat_id=PUBLIC_CHANNEL_ID,
@@ -137,7 +134,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     await query.answer(f"Ошибка: {e}")
                     return
             
-            # Меняем кнопку
             await query.edit_message_reply_markup(
                 reply_markup=InlineKeyboardMarkup([[
                     InlineKeyboardButton("✅ Опубликовано", callback_data="done")
@@ -184,6 +180,13 @@ async def main():
             entity = await client.get_entity(ch)
             channels.append(entity)
             print(f"📢 Мониторинг: {entity.title}")
+            
+            # Запоминаем последнее сообщение в каждом канале
+            last_msg = await client.get_messages(entity, limit=1)
+            if last_msg:
+                last_message_ids[entity.id] = last_msg[0].id
+                print(f"   Последний ID: {last_msg[0].id}")
+                
         except Exception as e:
             print(f"❌ Ошибка {ch}: {e}")
     
@@ -207,53 +210,66 @@ async def main():
         print(f"❌ Ошибка доступа к публичному каналу: {e}")
         return
     
-    # Обработчик новых сообщений из исходных каналов
-    @client.on(events.NewMessage(chats=channels))
-    async def handler(event):
-        msg = event.message
-        
-        # Игнорируем альбомы
-        if msg.grouped_id:
-            print(f"⏭️ Пропущен альбом из {msg.chat.title}")
-            return
-        
-        original_text = msg.text or ""
-        
-        media_data = None
-        media_type = None
-        
-        if msg.media:
-            if isinstance(msg.media, MessageMediaPhoto):
-                media_type = "photo"
-                try:
-                    media_data = await msg.download_media(bytes)
-                except Exception as e:
-                    print(f"Ошибка фото: {e}")
-            elif isinstance(msg.media, MessageMediaDocument):
-                if msg.media.document and hasattr(msg.media.document, 'mime_type'):
-                    if 'video' in msg.media.document.mime_type:
-                        media_type = "video"
-                        try:
-                            media_data = await msg.download_media(bytes)
-                        except Exception as e:
-                            print(f"Ошибка видео: {e}")
-        
-        if not original_text and not media_data:
-            return
-        
-        await send_to_draft(app, original_text, media_data, media_type, msg.chat.title)
+    # Функция для проверки новых сообщений (polling)
+    async def check_new_messages():
+        print("\n🔄 Запущен polling для проверки новых сообщений...")
+        while True:
+            try:
+                for channel in channels:
+                    # Получаем последние 5 сообщений
+                    messages = await client.get_messages(channel, limit=5)
+                    
+                    for msg in messages:
+                        # Если сообщение новее сохраненного ID
+                        if msg.id > last_message_ids.get(channel.id, 0):
+                            print(f"\n📥 НОВОЕ СООБЩЕНИЕ из {channel.title}!")
+                            
+                            # Обрабатываем сообщение
+                            original_text = msg.text or ""
+                            
+                            media_data = None
+                            media_type = None
+                            
+                            if msg.media:
+                                if isinstance(msg.media, MessageMediaPhoto):
+                                    media_type = "photo"
+                                    try:
+                                        media_data = await msg.download_media(bytes)
+                                    except Exception as e:
+                                        print(f"Ошибка фото: {e}")
+                                elif isinstance(msg.media, MessageMediaDocument):
+                                    if msg.media.document and hasattr(msg.media.document, 'mime_type'):
+                                        if 'video' in msg.media.document.mime_type:
+                                            media_type = "video"
+                                            try:
+                                                media_data = await msg.download_media(bytes)
+                                            except Exception as e:
+                                                print(f"Ошибка видео: {e}")
+                            
+                            # Пропускаем альбомы
+                            if msg.grouped_id:
+                                print(f"⏭️ Пропущен альбом из {channel.title}")
+                                continue
+                            
+                            if original_text or media_data:
+                                await send_to_draft(app, original_text, media_data, media_type, channel.title)
+                            
+                            # Обновляем последний ID
+                            last_message_ids[channel.id] = msg.id
+                            
+            except Exception as e:
+                print(f"Ошибка при опросе: {e}")
+            
+            await asyncio.sleep(3)  # Проверяем каждые 3 секунды
     
     # Обработчик редактирования сообщений в черновике
     @client.on(events.MessageEdited(chats=[DRAFT_CHANNEL_ID]))
     async def edit_handler(event):
         msg = event.message
-        
-        # Проверяем, есть ли этот пост в нашем хранилище
         if msg.id in draft_posts:
-            # Обновляем текст
             new_text = msg.text or msg.caption or ""
             draft_posts[msg.id]["text"] = clean_text(new_text)
-            print(f"✏️ Обновлен текст поста {msg.id}: {new_text[:50]}...")
+            print(f"✏️ Обновлен текст поста {msg.id}")
     
     async def send_to_draft(app, text, media_data, media_type, chat_title):
         cleaned_text = clean_text(text)
@@ -298,20 +314,21 @@ async def main():
             
             draft_posts[sent_msg.message_id] = post_data
             print(f"✅ В черновик (ID: {sent_msg.message_id})")
-            print(f"📝 Текст: {cleaned_text[:100]}...")
             
         except Exception as e:
             print(f"❌ Ошибка: {e}")
+    
+    # Запускаем polling в фоне
+    asyncio.create_task(check_new_messages())
     
     print("\n🚀 Мониторинг запущен!")
     print(f"📝 Черновики: {draft_entity.title}")
     print(f"📢 Публикация: {public_entity.title}")
     print("\n💡 Как работает:")
-    print("   1. Посты из исходных каналов попадают в черновик")
-    print("   2. Вы редактируете текст прямо в канале-черновике")
-    print("   3. Бот автоматически обновляет сохраненный текст")
-    print("   4. Нажимаете 'Опубликовать' - публикуется ОТРЕДАКТИРОВАННЫЙ текст")
-    print("   5. Кнопка 'Удалить' удаляет черновик\n")
+    print("   1. Бот проверяет новые сообщения каждые 3 секунды")
+    print("   2. Посты из исходных каналов попадают в черновик")
+    print("   3. Вы редактируете текст прямо в канале-черновике")
+    print("   4. Нажимаете 'Опубликовать' - пост уходит в открытый канал\n")
     
     try:
         await client.run_until_disconnected()
