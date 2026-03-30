@@ -1,0 +1,50 @@
+{
+  "draft": {
+    "channel": "-1003738334003"
+  },
+  "check_interval": 1,
+  "channels": [
+    {
+      "name": "Юмор",
+      "public_channel": "@ugarniy_ceh",
+      "source_channels": ["@twitt_ota", "@memachh"],
+      "hashtags": ["юмор", "приколы", "humor"],
+      "rss_feeds": []
+    },
+    {
+      "name": "Животные",
+      "public_channel": "@milie_lapki",
+      "source_channels": ["@Bezkotika", "@sobakech_sobaki", "@koshkii_kotiki"],
+      "hashtags": [
+        "смешныеживотные",
+        "позитив",
+        "pets",
+        "animals",
+        "cute",
+        "cat"
+      ],
+      "rss_feeds": []
+    },
+    {
+      "name": "Новости РТ",
+      "public_channel": "@novosti_rt_24",
+      "source_channels": [
+        "@kazan",
+        "@bugulma_inform",
+        "@kazancity",
+        "@leninogorsk_city_rt",
+        "@almetyevsk_1",
+        "@leoday"
+      ],
+      "hashtags": [
+        "смешныеживотные",
+        "позитив",
+        "pets",
+        "animals",
+        "cute",
+        "cat"
+      ],
+      "rss_feeds": []
+    }
+  ]
+}
