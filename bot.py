@@ -119,16 +119,29 @@ async def send_media_group_safe(bot, chat_id: int, media_group: list):
         return None
 
 # ==================== ФОРМИРОВАНИЕ ФИНАЛЬНОГО ТЕКСТА ====================
-def format_final_text(content: str, hashtags: list) -> str:
+def format_final_text(content: str, hashtags: list, channel_link: str = None) -> str:
     """Формирует финальный текст для публикации"""
     result = content.strip() if content else ""
     
+    # Добавляем хештеги
     if hashtags:
         hashtags_text = ' '.join([f"#{tag.strip()}" for tag in hashtags if tag.strip()])
         if result:
             result += f"\n\n{hashtags_text}"
         else:
             result = hashtags_text
+    
+    # Добавляем ссылку на публичный канал в конце
+    if channel_link:
+        # Форматируем ссылку
+        if channel_link.startswith('@'):
+            channel_ref = channel_link
+        elif channel_link.startswith('https://t.me/'):
+            channel_ref = channel_link
+        else:
+            channel_ref = f"@{channel_link}"
+        
+        result += f"\n\n{channel_ref}"
     
     return result
 
@@ -440,16 +453,20 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
             content = post_data.get("text", "")
             hashtags = channel_config['hashtags']
+            channel_link = channel_config.get('public_channel')  # Ссылка на канал
             
+            # Добавляем RSS хештеги если есть
             if post_data.get("custom_hashtags"):
                 hashtags = hashtags + post_data["custom_hashtags"]
             
-            final_text = format_final_text(content, hashtags)
+            # Формируем финальный текст с ссылкой на канал
+            final_text = format_final_text(content, hashtags, channel_link)
             target_channel_id = channel_config.get('public_channel_id')
             media_list = post_data.get("media", [])
             
             logger.info(f"Publishing to {channel_config['name']} ({target_channel_id})")
             logger.info(f"Media count: {len(media_list)}")
+            logger.info(f"Channel link added: {channel_link}")
             
             try:
                 # Публикуем с медиа если есть
