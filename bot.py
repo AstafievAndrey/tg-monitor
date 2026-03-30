@@ -3,9 +3,8 @@ import re
 import hashlib
 import sys
 import io
-from datetime import datetime
 from io import BytesIO
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 
 from config_loader import config
 from text_cleaner import TextCleaner
@@ -14,7 +13,7 @@ from database import db
 from telethon import TelegramClient, events
 from telethon.tl.types import MessageMediaPhoto, MessageMediaDocument
 
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update, InputMediaPhoto, InputMediaVideo
 from telegram.ext import Application, CallbackQueryHandler, ContextTypes
 from telegram.error import TimedOut, NetworkError
 
@@ -74,14 +73,62 @@ async def safe_send_message(bot, chat_id: int, text: str, **kwargs):
             **kwargs
         )
 
+async def send_photo_safe(bot, chat_id: int, photo: BytesIO, caption: str = None):
+    """Безопасная отправка фото"""
+    try:
+        return await bot.send_photo(
+            chat_id=chat_id,
+            photo=photo,
+            caption=caption,
+            parse_mode='Markdown' if caption else None
+        )
+    except Exception as e:
+        logger.warning(f"Photo send error, trying without caption: {e}")
+        return await bot.send_photo(
+            chat_id=chat_id,
+            photo=photo,
+            caption=None
+        )
+
+async def send_video_safe(bot, chat_id: int, video: BytesIO, caption: str = None):
+    """Безопасная отправка видео"""
+    try:
+        return await bot.send_video(
+            chat_id=chat_id,
+            video=video,
+            caption=caption,
+            parse_mode='Markdown' if caption else None
+        )
+    except Exception as e:
+        logger.warning(f"Video send error, trying without caption: {e}")
+        return await bot.send_video(
+            chat_id=chat_id,
+            video=video,
+            caption=None
+        )
+
+async def send_media_group_safe(bot, chat_id: int, media_group: list):
+    """Безопасная отправка группы медиа"""
+    try:
+        return await bot.send_media_group(
+            chat_id=chat_id,
+            media=media_group
+        )
+    except Exception as e:
+        logger.error(f"Media group send error: {e}")
+        return None
+
 # ==================== ФОРМИРОВАНИЕ ФИНАЛЬНОГО ТЕКСТА ====================
 def format_final_text(content: str, hashtags: list) -> str:
     """Формирует финальный текст для публикации"""
-    result = content.strip()
+    result = content.strip() if content else ""
     
     if hashtags:
         hashtags_text = ' '.join([f"#{tag.strip()}" for tag in hashtags if tag.strip()])
-        result += f"\n\n{hashtags_text}"
+        if result:
+            result += f"\n\n{hashtags_text}"
+        else:
+            result = hashtags_text
     
     return result
 
@@ -89,6 +136,36 @@ def format_final_text(content: str, hashtags: list) -> str:
 def generate_post_id(source: str, identifier: str) -> str:
     """Генерирует уникальный ID для поста"""
     return hashlib.md5(f"{source}:{identifier}".encode()).hexdigest()
+
+# ==================== ИЗВЛЕЧЕНИЕ МЕДИА ====================
+async def extract_media(msg) -> tuple:
+    """Извлекает медиа из сообщения"""
+    media_data = None
+    media_type = None
+    
+    if not msg.media:
+        return media_data, media_type
+    
+    try:
+        if isinstance(msg.media, MessageMediaPhoto):
+            media_type = "photo"
+            media_data = await msg.download_media(bytes)
+            logger.info(f"Downloaded photo: {len(media_data)} bytes")
+            
+        elif isinstance(msg.media, MessageMediaDocument):
+            if hasattr(msg.media.document, 'mime_type'):
+                if 'video' in msg.media.document.mime_type:
+                    media_type = "video"
+                    media_data = await msg.download_media(bytes)
+                    logger.info(f"Downloaded video: {len(media_data)} bytes")
+                elif 'image' in msg.media.document.mime_type:
+                    media_type = "photo"
+                    media_data = await msg.download_media(bytes)
+                    logger.info(f"Downloaded image: {len(media_data)} bytes")
+    except Exception as e:
+        logger.error(f"Error downloading media: {e}")
+    
+    return media_data, media_type
 
 # ==================== МОНИТОРИНГ TELEGRAM КАНАЛОВ ====================
 async def monitor_telegram_channels(client, application):
@@ -138,7 +215,8 @@ async def monitor_telegram_channels(client, application):
                             logger.info(f"New message from {entity.title} -> {channel_config['name']}")
                             
                             if msg.grouped_id:
-                                logger.info("Skipping album")
+                                logger.info("Skipping album (will handle separately)")
+                                # TODO: обработка альбомов
                                 continue
                             
                             post_id = generate_post_id(entity.title, str(msg.id))
@@ -147,13 +225,19 @@ async def monitor_telegram_channels(client, application):
                                 logger.info(f"Post already processed: {post_id}")
                                 continue
                             
+                            # Очищаем текст
                             original_text = msg.text or ""
                             cleaned_text = TextCleaner.clean(original_text)
                             
-                            if cleaned_text:
+                            # Извлекаем медиа
+                            media_data, media_type = await extract_media(msg)
+                            
+                            if cleaned_text or media_data:
                                 await send_to_draft(
                                     application=application,
                                     text=cleaned_text,
+                                    media_data=media_data,
+                                    media_type=media_type,
                                     source_title=entity.title,
                                     channel_config=channel_config,
                                     post_type="telegram"
@@ -162,7 +246,8 @@ async def monitor_telegram_channels(client, application):
                                 db.add_processed(post_id, {
                                     'source': entity.title,
                                     'message_id': msg.id,
-                                    'channel': channel_config['name']
+                                    'channel': channel_config['name'],
+                                    'has_media': media_data is not None
                                 })
                             
                             last_message_ids[entity.id] = msg.id
@@ -177,7 +262,7 @@ async def monitor_telegram_channels(client, application):
 
 # ==================== МОНИТОРИНГ RSS ЛЕНТ ====================
 async def monitor_rss_feeds(application):
-    """Мониторинг RSS лент"""
+    """Мониторинг RSS лент (только текст, медиа из RSS не поддерживается)"""
     all_rss_feeds = config.get_all_rss_feeds()
     
     if not all_rss_feeds:
@@ -239,6 +324,8 @@ async def monitor_rss_feeds(application):
                             await send_to_draft(
                                 application=application,
                                 text=cleaned_text,
+                                media_data=None,
+                                media_type=None,
                                 source_title=feed_name,
                                 channel_config=channel_config,
                                 post_type="rss",
@@ -264,41 +351,70 @@ async def monitor_rss_feeds(application):
         await asyncio.sleep(CHECK_INTERVAL * 6)
 
 # ==================== ОТПРАВКА В ЧЕРНОВИК ====================
-async def send_to_draft(application, text: str, source_title: str, channel_config: dict, 
+async def send_to_draft(application, text: str, media_data: bytes, media_type: str, 
+                        source_title: str, channel_config: dict, 
                         post_type: str = "telegram", custom_hashtags: list = None):
-    """Отправляет пост в черновик с кнопками"""
+    """Отправляет пост в черновик с кнопками и медиа"""
     
     prefix = f"[{channel_config['name']}] {post_type.upper()}: {source_title}\n\n"
-    full_text = prefix + text
+    full_text = prefix + text if text else prefix
     
     post_data = {
         "text": text,
+        "media": [],
         "source": source_title,
         "channel_config": channel_config,
         "post_type": post_type,
         "custom_hashtags": custom_hashtags or []
     }
     
+    # Добавляем медиа если есть
+    if media_data and media_type:
+        post_data["media"].append({
+            "type": media_type,
+            "data": media_data
+        })
+    
     try:
-        sent_msg = await safe_send_message(
-            application.bot,
-            DRAFT_CHANNEL_ID,
-            full_text
-        )
+        sent_msg = None
         
-        keyboard = InlineKeyboardMarkup([[
-            InlineKeyboardButton("Publish", callback_data=f"publish_{sent_msg.message_id}"),
-            InlineKeyboardButton("Delete", callback_data=f"delete_{sent_msg.message_id}")
-        ]])
+        # Отправляем в зависимости от наличия медиа
+        if media_data and media_type == "photo":
+            sent_msg = await send_photo_safe(
+                application.bot,
+                DRAFT_CHANNEL_ID,
+                BytesIO(media_data),
+                caption=full_text if full_text else None
+            )
+        elif media_data and media_type == "video":
+            sent_msg = await send_video_safe(
+                application.bot,
+                DRAFT_CHANNEL_ID,
+                BytesIO(media_data),
+                caption=full_text if full_text else None
+            )
+        else:
+            sent_msg = await safe_send_message(
+                application.bot,
+                DRAFT_CHANNEL_ID,
+                full_text if full_text else "New post"
+            )
         
-        await application.bot.edit_message_reply_markup(
-            chat_id=DRAFT_CHANNEL_ID,
-            message_id=sent_msg.message_id,
-            reply_markup=keyboard
-        )
-        
-        draft_posts[sent_msg.message_id] = post_data
-        logger.info(f"Post sent to draft (ID: {sent_msg.message_id})")
+        if sent_msg:
+            # Добавляем кнопки
+            keyboard = InlineKeyboardMarkup([[
+                InlineKeyboardButton("Publish", callback_data=f"publish_{sent_msg.message_id}"),
+                InlineKeyboardButton("Delete", callback_data=f"delete_{sent_msg.message_id}")
+            ]])
+            
+            await application.bot.edit_message_reply_markup(
+                chat_id=DRAFT_CHANNEL_ID,
+                message_id=sent_msg.message_id,
+                reply_markup=keyboard
+            )
+            
+            draft_posts[sent_msg.message_id] = post_data
+            logger.info(f"Post sent to draft (ID: {sent_msg.message_id}, media: {media_type if media_data else 'none'})")
         
     except Exception as e:
         logger.error(f"Error sending to draft: {e}")
@@ -330,18 +446,63 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
             final_text = format_final_text(content, hashtags)
             target_channel_id = channel_config.get('public_channel_id')
+            media_list = post_data.get("media", [])
             
             logger.info(f"Publishing to {channel_config['name']} ({target_channel_id})")
+            logger.info(f"Media count: {len(media_list)}")
             
             try:
-                await safe_send_message(
-                    context.bot,
-                    target_channel_id,
-                    final_text,
-                    disable_web_page_preview=False
-                )
+                # Публикуем с медиа если есть
+                if media_list:
+                    if len(media_list) == 1:
+                        media = media_list[0]
+                        if media["type"] == "photo":
+                            await send_photo_safe(
+                                context.bot,
+                                target_channel_id,
+                                BytesIO(media["data"]),
+                                caption=final_text if final_text else None
+                            )
+                        elif media["type"] == "video":
+                            await send_video_safe(
+                                context.bot,
+                                target_channel_id,
+                                BytesIO(media["data"]),
+                                caption=final_text if final_text else None
+                            )
+                    else:
+                        # Группа медиа
+                        media_group = []
+                        for i, media in enumerate(media_list):
+                            caption = final_text if i == 0 else ""
+                            if media["type"] == "photo":
+                                media_group.append(InputMediaPhoto(
+                                    media=BytesIO(media["data"]),
+                                    caption=caption
+                                ))
+                            elif media["type"] == "video":
+                                media_group.append(InputMediaVideo(
+                                    media=BytesIO(media["data"]),
+                                    caption=caption
+                                ))
+                        
+                        await send_media_group_safe(
+                            context.bot,
+                            target_channel_id,
+                            media_group
+                        )
+                else:
+                    # Только текст
+                    await safe_send_message(
+                        context.bot,
+                        target_channel_id,
+                        final_text if final_text else "New post",
+                        disable_web_page_preview=False
+                    )
+                
                 logger.info(f"Published to {channel_config['name']}")
                 
+                # Удаляем из черновика
                 await context.bot.delete_message(
                     chat_id=DRAFT_CHANNEL_ID,
                     message_id=draft_message_id
@@ -441,11 +602,12 @@ async def main():
     logger.info(f"Check interval: {CHECK_INTERVAL} sec")
     logger.info("")
     logger.info("HOW IT WORKS:")
-    logger.info("   1. New posts from Telegram/RSS go to draft channel")
-    logger.info("   2. You can edit text in draft channel")
-    logger.info("   3. When publishing, hashtags from config are added")
-    logger.info("   4. Source links are NOT added")
-    logger.info("   5. Anyone can publish/delete posts")
+    logger.info("   1. New posts from Telegram (with photos/videos) go to draft channel")
+    logger.info("   2. RSS feeds (text only) go to draft channel")
+    logger.info("   3. You can edit text in draft channel")
+    logger.info("   4. When publishing, hashtags from config are added")
+    logger.info("   5. Media files are preserved and published with the post")
+    logger.info("   6. Source links are NOT added")
     logger.info("="*60 + "\n")
     
     try:
