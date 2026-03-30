@@ -14,7 +14,7 @@
     {
       "name": "Юмор",
       "public_channel": "@ugarniy_ceh",
-      "source_channels": ["@twitt_ota", "@memachh"],
+      "source_channels": ["@twitt_ota", "@memachh", "@leoday"],
       "hashtags": ["юмор", "приколы", "humor"],
       "rss_feeds": []
     },
@@ -40,8 +40,7 @@
         "@bugulma_inform",
         "@kazancity",
         "@leninogorsk_city_rt",
-        "@almetyevsk_1",
-        "@leoday"
+        "@almetyevsk_1"
       ],
       "hashtags": ["новости", "республика", "рт", "татарстан"],
       "rss_feeds": []
