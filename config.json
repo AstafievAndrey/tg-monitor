@@ -2,8 +2,15 @@
   "draft": {
     "channel": "-1003738334003"
   },
-  "check_interval": 1,
+  "check_interval": 10,
   "channels": [
+    {
+      "name": "Тест",
+      "public_channel": "@test_channel_monit",
+      "source_channels": ["@test_pub_bot_pr"],
+      "hashtags": ["юмор", "приколы", "humor"],
+      "rss_feeds": []
+    },
     {
       "name": "Юмор",
       "public_channel": "@ugarniy_ceh",
