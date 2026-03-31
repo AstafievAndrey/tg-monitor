@@ -8,18 +8,16 @@
       "name": "Тест",
       "public_channel": "@test_channel_monit",
       "source_channels": ["@test_pub_bot_pr"],
-      "hashtags": ["юмор", "приколы", "humor"],
-      "rss_feeds": []
+      "hashtags": ["юмор", "приколы", "humor"]
     },
     {
-      "name": "Юмор",
+      "name": "Юмор ugarniy_ceh",
       "public_channel": "@ugarniy_ceh",
-      "source_channels": ["@twitt_ota", "@memachh"],
-      "hashtags": ["юмор", "приколы", "humor"],
-      "rss_feeds": []
+      "source_channels": ["@twitt_ota", "@memachh", "@leoday"],
+      "hashtags": ["юмор", "приколы", "humor"]
     },
     {
-      "name": "Животные",
+      "name": "Животные milie_lapki",
       "public_channel": "@milie_lapki",
       "source_channels": ["@Bezkotika", "@sobakech_sobaki", "@koshkii_kotiki"],
       "hashtags": [
@@ -29,8 +27,7 @@
         "animals",
         "cute",
         "cat"
-      ],
-      "rss_feeds": []
+      ]
     },
     {
       "name": "Новости РТ",
@@ -40,11 +37,9 @@
         "@bugulma_inform",
         "@kazancity",
         "@leninogorsk_city_rt",
-        "@almetyevsk_1",
-        "@leoday"
+        "@almetyevsk_1"
       ],
-      "hashtags": ["новости", "республика", "рт", "татарстан"],
-      "rss_feeds": []
+      "hashtags": ["новости", "республика", "рт", "татарстан"]
     }
   ]
 }

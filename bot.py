@@ -5,7 +5,7 @@ import sys
 import io
 import traceback
 from io import BytesIO
-from typing import Dict, Any, Optional
+from typing import Dict, Any
 
 from config_loader import config
 from text_cleaner import TextCleaner
@@ -16,12 +16,8 @@ from telethon.tl.types import MessageMediaPhoto, MessageMediaDocument
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update, InputMediaPhoto, InputMediaVideo
 from telegram.ext import Application, CallbackQueryHandler, ContextTypes
-from telegram.error import TimedOut, NetworkError
 
 import logging
-import feedparser
-from bs4 import BeautifulSoup
-import httpx
 
 # Настройка кодировки для Windows
 if sys.platform == 'win32':
@@ -51,16 +47,9 @@ CHECK_INTERVAL = config.check_interval
 draft_posts: Dict[int, Dict] = {}
 last_message_ids: Dict[int, int] = {}
 
-# HTTP клиент для RSS
-http_client = httpx.AsyncClient(timeout=30.0)
-
 # ==================== БЕЗОПАСНАЯ ОТПРАВКА ====================
 async def safe_send_message(bot, chat_id: int, text: str, **kwargs):
     """Безопасная отправка сообщения с обработкой ошибок"""
-    if not text:
-        return None
-    
-    # Пробуем отправить с Markdown
     try:
         return await bot.send_message(
             chat_id=chat_id,
@@ -70,102 +59,14 @@ async def safe_send_message(bot, chat_id: int, text: str, **kwargs):
         )
     except Exception as e:
         logger.warning(f"Markdown error, sending without formatting: {e}")
-        # Убираем все Markdown символы
-        clean_text = text
-        # Убираем Markdown разметку
-        clean_text = re.sub(r'([*_`~>#+\-=|{}\[\]()!\\])', r'\\\1', clean_text)
-        # Или просто убираем все спецсимволы
-        clean_text = re.sub(r'[*_`#]', '', clean_text)
-        
-        try:
-            return await bot.send_message(
-                chat_id=chat_id,
-                text=clean_text,
-                parse_mode=None,
-                **kwargs
-            )
-        except Exception as e2:
-            logger.error(f"Failed to send even without formatting: {e2}")
-            return None
+        clean_text = re.sub(r'[*_`#]', '', text)
+        return await bot.send_message(
+            chat_id=chat_id,
+            text=clean_text,
+            parse_mode=None,
+            **kwargs
+        )
 
-async def send_to_draft(application, text: str, media_data: bytes, media_type: str, 
-                        source_title: str, channel_config: dict, 
-                        post_type: str = "telegram", custom_hashtags: list = None):
-    """Отправляет пост в черновик с кнопками и медиа"""
-    
-    # Очищаем текст от проблемных символов перед отправкой
-    clean_source = re.sub(r'[*_`#]', '', source_title)
-    clean_name = re.sub(r'[*_`#]', '', channel_config['name'])
-    
-    prefix = f"[{clean_name}] {post_type.upper()}: {clean_source}\n\n"
-    full_text = prefix + text if text else prefix
-    
-    # Очищаем весь текст от проблемных Markdown символов
-    full_text = re.sub(r'([*_`~>#+\-=|{}\[\]()!\\])', r'\\\1', full_text)
-    
-    # Сохраняем медиа
-    saved_media = []
-    if media_data and media_type and len(media_data) > 0:
-        saved_media.append({
-            "type": media_type,
-            "data": bytes(media_data)
-        })
-        logger.info(f"Saving media to draft: {media_type}, {len(media_data)} bytes")
-    
-    post_data = {
-        "text": text,
-        "media": saved_media,
-        "source": source_title,
-        "channel_config": channel_config,
-        "post_type": post_type,
-        "custom_hashtags": custom_hashtags or []
-    }
-    
-    try:
-        sent_msg = None
-        
-        # Отправляем в черновик
-        if saved_media:
-            media = saved_media[0]
-            if media["type"] == "photo":
-                sent_msg = await application.bot.send_photo(
-                    chat_id=DRAFT_CHANNEL_ID,
-                    photo=BytesIO(media["data"]),
-                    caption=full_text if full_text else None,
-                    parse_mode=None  # Отключаем Markdown для безопасности
-                )
-            elif media["type"] == "video":
-                sent_msg = await application.bot.send_video(
-                    chat_id=DRAFT_CHANNEL_ID,
-                    video=BytesIO(media["data"]),
-                    caption=full_text if full_text else None,
-                    parse_mode=None
-                )
-        else:
-            sent_msg = await application.bot.send_message(
-                chat_id=DRAFT_CHANNEL_ID,
-                text=full_text if full_text else "New post",
-                parse_mode=None  # Отключаем Markdown
-            )
-        
-        if sent_msg:
-            # Добавляем кнопки
-            keyboard = InlineKeyboardMarkup([[
-                InlineKeyboardButton("Publish", callback_data=f"publish_{sent_msg.message_id}"),
-                InlineKeyboardButton("Delete", callback_data=f"delete_{sent_msg.message_id}")
-            ]])
-            
-            await application.bot.edit_message_reply_markup(
-                chat_id=DRAFT_CHANNEL_ID,
-                message_id=sent_msg.message_id,
-                reply_markup=keyboard
-            )
-            
-            draft_posts[sent_msg.message_id] = post_data
-            logger.info(f"Post sent to draft (ID: {sent_msg.message_id}, media: {len(saved_media)})")
-        
-    except Exception as e:
-        logger.error(f"Error sending to draft: {e}")
 # ==================== ФОРМИРОВАНИЕ ФИНАЛЬНОГО ТЕКСТА ====================
 def format_final_text(content: str, hashtags: list, channel_link: str = None) -> str:
     """Формирует финальный текст для публикации"""
@@ -302,11 +203,9 @@ async def monitor_telegram_channels(client, application):
                                 logger.info(f"Post already processed: {post_id}")
                                 continue
                             
-                            # Очищаем текст
                             original_text = msg.text or ""
                             cleaned_text = TextCleaner.clean(original_text)
                             
-                            # Извлекаем медиа
                             media_data, media_type = await extract_media(msg)
                             
                             if cleaned_text or media_data:
@@ -337,106 +236,19 @@ async def monitor_telegram_channels(client, application):
     asyncio.create_task(check_new_messages())
     logger.info(f"Telegram monitoring started (interval: {CHECK_INTERVAL} sec)")
 
-# ==================== МОНИТОРИНГ RSS ЛЕНТ ====================
-async def monitor_rss_feeds(application):
-    """Мониторинг RSS лент (только текст, медиа из RSS не поддерживается)"""
-    all_rss_feeds = config.get_all_rss_feeds()
-    
-    if not all_rss_feeds:
-        logger.info("No RSS feeds configured")
-        return
-    
-    logger.info(f"RSS monitoring started ({len(all_rss_feeds)} sources)")
-    
-    while True:
-        try:
-            for feed_item in all_rss_feeds:
-                channel_config = feed_item['channel_config']
-                feed_name = feed_item['feed_name']
-                feed_url = feed_item['feed_url']
-                feed_hashtags = feed_item['feed_hashtags']
-                
-                logger.info(f"[RSS] Checking: {feed_name} -> {channel_config['name']}")
-                
-                try:
-                    response = await http_client.get(feed_url)
-                    
-                    if response.status_code != 200:
-                        logger.error(f"Failed to load {feed_name}: {response.status_code}")
-                        continue
-                    
-                    feed_data = feedparser.parse(response.text)
-                    
-                    for entry in feed_data.entries[:5]:
-                        entry_link = entry.get('link', '')
-                        entry_title = entry.get('title', '')
-                        post_id = generate_post_id(feed_name, f"{entry_link}:{entry_title}")
-                        
-                        if db.is_processed(post_id):
-                            continue
-                        
-                        title = entry.get('title', '')
-                        link = entry.get('link', '')
-                        summary = entry.get('summary', '')
-                        published = entry.get('published', '')
-                        
-                        if summary:
-                            soup = BeautifulSoup(summary, 'html.parser')
-                            clean_summary = soup.get_text(separator=' ', strip=True)
-                            if len(clean_summary) > 500:
-                                clean_summary = clean_summary[:500] + '...'
-                        else:
-                            clean_summary = ''
-                        
-                        text = f"{title}\n\n"
-                        if published:
-                            text += f"Date: {published}\n\n"
-                        if clean_summary:
-                            text += f"{clean_summary}\n\n"
-                        text += f"Link: {link}"
-                        
-                        cleaned_text = TextCleaner.clean(text)
-                        
-                        if cleaned_text:
-                            await send_to_draft(
-                                application=application,
-                                text=cleaned_text,
-                                media_data=None,
-                                media_type=None,
-                                source_title=feed_name,
-                                channel_config=channel_config,
-                                post_type="rss",
-                                custom_hashtags=feed_hashtags
-                            )
-                            
-                            db.add_processed(post_id, {
-                                'source': feed_name,
-                                'title': title,
-                                'link': link
-                            })
-                            
-                            logger.info(f"[OK] New RSS post: {title[:50]}...")
-                            
-                except Exception as e:
-                    logger.error(f"Parse error {feed_name}: {e}")
-            
-            db.clean_old(days=7)
-            
-        except Exception as e:
-            logger.error(f"RSS monitoring error: {e}")
-        
-        await asyncio.sleep(CHECK_INTERVAL * 6)
-
 # ==================== ОТПРАВКА В ЧЕРНОВИК ====================
 async def send_to_draft(application, text: str, media_data: bytes, media_type: str, 
                         source_title: str, channel_config: dict, 
                         post_type: str = "telegram", custom_hashtags: list = None):
-    """Отправляет пост в черновик с кнопками и медиа"""
     
-    prefix = f"[{channel_config['name']}] {post_type.upper()}: {source_title}\n\n"
-    full_text = prefix + text if text else prefix
+    has_text = bool(text and text.strip())
     
-    # Сохраняем медиа
+    if has_text:
+        prefix = f"[{channel_config['name']}] {post_type.upper()}: {source_title}\n\n"
+        full_text = prefix + text
+    else:
+        full_text = f"[{channel_config['name']}] {post_type.upper()}: {source_title}"
+    
     saved_media = []
     if media_data and media_type and len(media_data) > 0:
         saved_media.append({
@@ -446,18 +258,18 @@ async def send_to_draft(application, text: str, media_data: bytes, media_type: s
         logger.info(f"Saving media to draft: {media_type}, {len(media_data)} bytes")
     
     post_data = {
-        "text": text,
+        "text": text if has_text else "",
         "media": saved_media,
         "source": source_title,
         "channel_config": channel_config,
         "post_type": post_type,
+        "has_text": has_text,
         "custom_hashtags": custom_hashtags or []
     }
     
     try:
         sent_msg = None
         
-        # Отправляем в черновик без Markdown
         if saved_media:
             media = saved_media[0]
             if media["type"] == "photo":
@@ -465,20 +277,20 @@ async def send_to_draft(application, text: str, media_data: bytes, media_type: s
                     chat_id=DRAFT_CHANNEL_ID,
                     photo=BytesIO(media["data"]),
                     caption=full_text if full_text else None,
-                    parse_mode=None  # ОТКЛЮЧАЕМ Markdown
+                    parse_mode=None
                 )
             elif media["type"] == "video":
                 sent_msg = await application.bot.send_video(
                     chat_id=DRAFT_CHANNEL_ID,
                     video=BytesIO(media["data"]),
                     caption=full_text if full_text else None,
-                    parse_mode=None  # ОТКЛЮЧАЕМ Markdown
+                    parse_mode=None
                 )
         else:
             sent_msg = await application.bot.send_message(
                 chat_id=DRAFT_CHANNEL_ID,
                 text=full_text if full_text else "New post",
-                parse_mode=None  # ОТКЛЮЧАЕМ Markdown
+                parse_mode=None
             )
         
         if sent_msg:
@@ -494,7 +306,7 @@ async def send_to_draft(application, text: str, media_data: bytes, media_type: s
             )
             
             draft_posts[sent_msg.message_id] = post_data
-            logger.info(f"Post sent to draft (ID: {sent_msg.message_id}, media: {len(saved_media)})")
+            logger.info(f"Post sent to draft (ID: {sent_msg.message_id}, media: {len(saved_media)}, has_text: {has_text})")
         
     except Exception as e:
         logger.error(f"Error sending to draft: {e}")
@@ -519,7 +331,9 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await query.answer("Channel not specified!")
                 return
             
+            # Получаем данные поста
             content = post_data.get("text", "")
+            has_text = post_data.get("has_text", False)
             hashtags = channel_config['hashtags']
             channel_link = channel_config.get('public_channel')
             
@@ -528,12 +342,16 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 hashtags = hashtags + post_data["custom_hashtags"]
             
             # Формируем финальный текст
-            final_text = format_final_text(content, hashtags, channel_link)
+            if has_text:
+                final_text = format_final_text(content, hashtags, channel_link)
+            else:
+                final_text = format_final_text("", hashtags, channel_link)
+            
             target_channel_id = channel_config.get('public_channel_id')
             media_list = post_data.get("media", [])
             
             logger.info(f"Publishing to {channel_config['name']} ({target_channel_id})")
-            logger.info(f"Media count: {len(media_list)}")
+            logger.info(f"Media count: {len(media_list)}, has_text: {has_text}")
             
             # Проверяем валидность медиа
             valid_media = []
@@ -556,14 +374,14 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                                 chat_id=target_channel_id,
                                 photo=BytesIO(media["data"]),
                                 caption=final_text if final_text else None,
-                                parse_mode=None  # ОТКЛЮЧАЕМ Markdown
+                                parse_mode=None
                             )
                         elif media["type"] == "video":
                             await context.bot.send_video(
                                 chat_id=target_channel_id,
                                 video=BytesIO(media["data"]),
                                 caption=final_text if final_text else None,
-                                parse_mode=None  # ОТКЛЮЧАЕМ Markdown
+                                parse_mode=None
                             )
                     else:
                         # Группа медиа
@@ -575,13 +393,13 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                                 media_group.append(InputMediaPhoto(
                                     media=BytesIO(media["data"]),
                                     caption=caption,
-                                    parse_mode=None  # ОТКЛЮЧАЕМ Markdown
+                                    parse_mode=None
                                 ))
                             elif media["type"] == "video":
                                 media_group.append(InputMediaVideo(
                                     media=BytesIO(media["data"]),
                                     caption=caption,
-                                    parse_mode=None  # ОТКЛЮЧАЕМ Markdown
+                                    parse_mode=None
                                 ))
                         
                         if media_group:
@@ -595,7 +413,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     await context.bot.send_message(
                         chat_id=target_channel_id,
                         text=final_text if final_text else "New post",
-                        parse_mode=None,  # ОТКЛЮЧАЕМ Markdown
+                        parse_mode=None,
                         disable_web_page_preview=False
                     )
                 
@@ -637,7 +455,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Error: {e}")
         traceback.print_exc()
         await query.answer("Error occurred")
-
 # ==================== ЗАПУСК ====================
 async def main():
     """Основная функция запуска"""
@@ -676,7 +493,6 @@ async def main():
                 logger.info(f"Channel '{channel_config['name']}': {public_channel.title}")
                 logger.info(f"   Hashtags: {' '.join(channel_config['hashtags'])}")
                 logger.info(f"   TG sources: {len(channel_config['source_channels'])}")
-                logger.info(f"   RSS sources: {len(channel_config.get('rss_feeds', []))}")
             except Exception as e:
                 logger.error(f"Channel error {channel_config['name']}: {e}")
     
@@ -694,7 +510,6 @@ async def main():
             logger.info(f"Updated text for post {msg.id}")
     
     await monitor_telegram_channels(client, application)
-    asyncio.create_task(monitor_rss_feeds(application))
     
     logger.info("\n" + "="*60)
     logger.info("MONITORING STARTED!")
@@ -703,12 +518,11 @@ async def main():
     logger.info(f"Check interval: {CHECK_INTERVAL} sec")
     logger.info("")
     logger.info("HOW IT WORKS:")
-    logger.info("   1. New posts from Telegram (with photos/videos) go to draft channel")
-    logger.info("   2. RSS feeds (text only) go to draft channel")
-    logger.info("   3. You can edit text in draft channel")
-    logger.info("   4. When publishing, hashtags from config are added")
-    logger.info("   5. Channel link is added at the end of each post")
-    logger.info("   6. Media files are preserved and published with the post")
+    logger.info("   1. New posts from Telegram channels go to draft channel")
+    logger.info("   2. You can edit text in draft channel")
+    logger.info("   3. When publishing, hashtags from config are added")
+    logger.info("   4. Channel link is added at the end of each post")
+    logger.info("   5. Media files are preserved and published with the post")
     logger.info("="*60 + "\n")
     
     try:
@@ -717,7 +531,6 @@ async def main():
         logger.info("\nStopping...")
     finally:
         await application.stop()
-        await http_client.aclose()
 
 if __name__ == "__main__":
     try:

@@ -18,9 +18,6 @@ class ConfigLoader:
         # Загружаем основную конфигурацию
         config_path = os.getenv('CONFIG_PATH', 'config.json')
         self.json_config = self.load_json_config(config_path)
-        
-        # Кэш для обработанных постов
-        self.processed_posts = set()
     
     def load_json_config(self, path: str) -> Dict[str, Any]:
         """Загружает JSON конфигурацию"""
@@ -63,8 +60,7 @@ class ConfigLoader:
                 'public_channel_id': self.parse_channel(channel['public_channel']),
                 'public_channel': channel['public_channel'],
                 'source_channels': [self.parse_channel(src) for src in channel.get('source_channels', [])],
-                'hashtags': channel.get('hashtags', []),
-                'rss_feeds': channel.get('rss_feeds', [])
+                'hashtags': channel.get('hashtags', [])
             })
         return configs
     
@@ -74,19 +70,6 @@ class ConfigLoader:
             if channel['name'] == name:
                 return channel
         return None
-    
-    def get_all_rss_feeds(self) -> List[Dict]:
-        """Получает все RSS ленты с привязкой к каналам"""
-        all_feeds = []
-        for channel in self.channels_config:
-            for feed in channel.get('rss_feeds', []):
-                all_feeds.append({
-                    'channel_config': channel,
-                    'feed_name': feed['name'],
-                    'feed_url': feed['url'],
-                    'feed_hashtags': feed.get('hashtags', [])
-                })
-        return all_feeds
 
 # Создаем глобальный экземпляр
 config = ConfigLoader()
